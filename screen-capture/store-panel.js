@@ -2,7 +2,7 @@
 // Screen capture panel for a webOS 5 web app (NZ Store style).
 // Drop this block before </body> in the app index.html. It adds a
 // "Screen captures" section to the Control tab with capture now / in 10s / in 20s.
-// The timer runs in the background daemon via POST /exec, so it still fires
+// The timer runs in the background daemon via POST /capture, so it still fires
 // after you close the app and switch to another screen.
 // Replace TOKENPLACEHOLDER with the token from /media/developer/natxo/daemon/token.
 (function(){
@@ -64,7 +64,7 @@
       var l = L();
       msg.dataset.busy = '1';
       msg.textContent = secs ? ('\u23f1 ' + secs + 's... ' + l.wait) : ('\ud83d\udcf8 ' + l.working);
-      daemonPost('/exec', {cmd: 'sh /tmp/nzcap-timer.sh ' + secs + ' &'}, function(resp){
+      daemonPost('/capture', {secs: secs}, function(resp){
         setTimeout(function(){
           msg.textContent = '\u2705 ' + l.done;
           msg.dataset.busy = '';

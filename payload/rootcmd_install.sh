@@ -15,6 +15,7 @@ LOG=$N/install.log
 RPT=/tmp/ROOTED.txt
 CG=/proc/1/root/media/cryptofs/apps/usr/palm/services/com.palmdts.devmode.service
 echo "== install $(date) uid=$(id -u) host=$HOST ==" > $LOG
+chmod 600 $LOG 2>/dev/null
 echo "ROOTED $(date) uid=$(id -u)" > $RPT
 chmod 644 $RPT 2>/dev/null
 
@@ -120,6 +121,5 @@ echo "ANTIWIPE: $(lsattr /var/luna/preferences/devmode_enabled 2>/dev/null)" >> 
 # 9. verification + report readable from prisoner (/tmp/ROOTED.txt, 644)
 if grep -q ':0016 ' /proc/net/tcp 2>/dev/null; then echo "PORT22_UP" >> $RPT; else echo "PORT22_DOWN" >> $RPT; fi
 grep -E 'OPENSSH|CHAIN|HOSTKEY|SHIM|APP_' $LOG >> $RPT 2>/dev/null
-echo "TOKEN: $(cat $N/daemon/token)" >> $RPT
 echo "== DONE $(date) ==" >> $LOG
 echo "DONE" >> $RPT

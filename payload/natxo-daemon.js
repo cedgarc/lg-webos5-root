@@ -1,7 +1,8 @@
 #!/usr/bin/node
 // NATXO daemon v2: local root API (127.0.0.1) + password telnet + app installer + NZ Store toggles
-const http = require('http'), net = require('net'), fs = require('fs'), cp = require('child_process');
+const http = require('http'), net = require('net'), fs = require('fs'), cp = require('child_process'), crypto = require('crypto');
 const BASE = '/media/developer/natxo';
+const NZCAP = BASE + '/nzcap';
 const TOKEN = (fs.readFileSync(BASE + '/daemon/token', 'utf8') || '').trim();
 const STATE = BASE + '/daemon/state.json';
 const PORT = 7777, TELNET_PORT = 23;
@@ -11,6 +12,11 @@ const NZLOG = '/tmp/nzstore-install.log';
 function log(m){ try { fs.appendFileSync(BASE + '/daemon/daemon.log', new Date().toISOString() + ' ' + m + '\n'); } catch(e){} }
 function state(){ try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch(e){ return {telnet:false}; } }
 function saveState(s){ fs.writeFileSync(STATE, JSON.stringify(s)); }
+// Constant-time compare; an empty token file must never mean "no auth"
+function tokenOk(h){
+  const a = Buffer.from(String(h || '')), b = Buffer.from(TOKEN);
+  return TOKEN.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 function sh(cmd, t){ return new Promise(r => cp.exec(cmd, {timeout: t || 20000}, (e, o, e2) => r((o || e2 || '').toString()))); }
 
 // ---------- IPK = 'ar' archive -> extract data.tar.gz (no ar binary on the TV) ----------
@@ -121,6 +127,7 @@ function startTelnet(){
     sock.on('data', d => {
       if (!authed) {
         buf += d.toString();
+        if (buf.length > 256) { sock.end('\nWRONG\n'); return; }
         if (buf.indexOf('\n') >= 0) {
           if (buf.trim() === TOKEN) {
             authed = true;
@@ -163,7 +170,7 @@ const srv = http.createServer((req, res) => {
     return;
   }
   // resto: requiere token
-  if ((req.headers['x-natxo-token'] || '') !== TOKEN) { json(res, 401, {error: 'bad token'}); return; }
+  if (!tokenOk(req.headers['x-natxo-token'])) { json(res, 401, {error: 'bad token'}); return; }
 
   if (req.method === 'GET' && url === '/toggle') {
     (async () => {
@@ -198,7 +205,7 @@ const srv = http.createServer((req, res) => {
       try {
         const o = JSON.parse(body);
         const u = (o.url || '').trim();
-        if (!/^https?:\/\//.test(u)) { json(res, 200, {ok: false, error: 'url http(s) requerida'}); return; }
+        if (!/^https:\/\//.test(u)) { json(res, 200, {ok: false, error: 'url https requerida'}); return; }
         const fname = ((o.name || 'app').replace(/[^A-Za-z0-9._-]/g, '')).slice(0, 60) + '.ipk';
         const dest = BASE + '/apps/' + fname;
         const dl = await sh(`wget -q -O '${dest}' '${u.replace(/'/g, '')}' && chmod 644 '${dest}' && wc -c < '${dest}'`, 300000);
@@ -229,7 +236,12 @@ const srv = http.createServer((req, res) => {
         const data = extractIpkData(fs.readFileSync(ipk));
         if (!data) { json(res, 200, {ok: false, error: 'no es un .ipk valido (sin data.tar dentro)'}); return; }
         fs.writeFileSync('/tmp/natxo-ipk-data.tar.gz', data);
-        cp.exec('tar tzf /tmp/natxo-ipk-data.tar.gz | head -40', {timeout: 20000}, (e1, list) => {
+        cp.exec('tar tzf /tmp/natxo-ipk-data.tar.gz', {timeout: 20000, maxBuffer: 8 * 1024 * 1024}, (e1, list) => {
+          const entries = (list || '').split('\n').filter(Boolean);
+          if (entries.some(p => p[0] === '/' || p.split('/').indexOf('..') >= 0)) {
+            log('install-fallo: ruta insegura en el ipk');
+            json(res, 200, {ok: false, error: 'ipk con rutas inseguras (/ o ..)'}); return;
+          }
           const mm = (list || '').match(/usr\/palm\/applications\/([A-Za-z0-9._-]+)\//);
           if (!mm) { log('install-fallo: id no encontrado'); json(res, 200, {ok: false, error: 'id de app no encontrado dentro del ipk', out: (list || '').slice(0, 200)}); return; }
           const id = mm[1];
@@ -242,16 +254,18 @@ const srv = http.createServer((req, res) => {
         });
       } catch (e3) { json(res, 400, {error: 'JSON invalido'}); }
     });
-  } else if (req.method === 'POST' && url === '/exec') {
+  } else if (req.method === 'POST' && url === '/capture') {
+    // Fixed action instead of a generic root shell: only a whole number of seconds is accepted,
+    // and the script runs from the root-owned natxo dir, never from /tmp.
     let body = '';
     req.on('data', d => body += d);
     req.on('end', () => {
       try {
-        const o = JSON.parse(body);
-        cp.exec(o.cmd || 'true', {timeout: 30000}, (e, out, err2) => {
-          log('exec: ' + (o.cmd || '').slice(0, 80));
-          json(res, 200, {ok: !e, out: (out || err2 || '').trim().slice(0, 2000)});
-        });
+        const secs = JSON.parse(body).secs;
+        if (!Number.isInteger(secs) || secs < 0 || secs > 60) { json(res, 200, {ok: false, error: 'secs: entero 0-60'}); return; }
+        cp.spawn('/bin/sh', [NZCAP + '/nzcap-timer.sh', String(secs)], {detached: true, stdio: 'ignore'}).unref();
+        log('capture in ' + secs + 's');
+        json(res, 200, {ok: true, started: true, secs});
       } catch (e2) { json(res, 400, {error: 'JSON invalido'}); }
     });
   } else {
